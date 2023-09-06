@@ -367,6 +367,12 @@ func schemaVirtualMachineConfigSpec() map[string]*schema.Schema {
 // on cloned VMs.
 func vAppSubresourceSchema() map[string]*schema.Schema {
 	return map[string]*schema.Schema{
+		"enabled": {
+			Type:        schema.TypeBool,
+			Optional:    true,
+			Default:     true,
+			Description: "Enable/disable vApp Options on the virtual machine",
+		},
 		"properties": {
 			Type:        schema.TypeMap,
 			Optional:    true,
@@ -687,9 +693,9 @@ func flattenExtraConfig(d *schema.ResourceData, opts []types.BaseOptionValue) er
 // We track changes to keys to determine if any have been removed from
 // configuration - if they have, we add them with an empty value to ensure
 // they are removed from vAppConfig on the update.
-func expandVAppConfig(d *schema.ResourceData, client *govmomi.Client) (*types.VmConfigSpec, error) {
+func expandVAppConfig(d *schema.ResourceData, client *govmomi.Client) (*types.VmConfigSpec, bool, error) {
 	if !d.HasChange("vapp") {
-		return nil, nil
+		return nil, false, nil
 	}
 
 	// Many vApp config values, such as IP address, will require a
@@ -705,10 +711,17 @@ func expandVAppConfig(d *schema.ResourceData, client *govmomi.Client) (*types.Vm
 	newVApps := newValue.([]interface{})
 	if len(newVApps) > 0 && newVApps[0] != nil {
 		newVApp := newVApps[0].(map[string]interface{})
+		if newVAppEnabled, ok := newVApp["enabled"].(bool); ok && !newVAppEnabled {
+			// vApp should be disabled
+			return &types.VmConfigSpec{
+				Property: props,
+			}, false, nil
+		}
+
 		if props, ok := newVApp["properties"].(map[string]interface{}); ok {
 			propsCopy, err := copystructure.Copy(props)
 			if err != nil {
-				return nil, fmt.Errorf("while extracting vapp properties into a new map: %s", err)
+				return nil, false, fmt.Errorf("while extracting vapp properties into a new map: %s", err)
 			}
 			newMap = propsCopy.(map[string]interface{})
 		}
@@ -721,14 +734,14 @@ func expandVAppConfig(d *schema.ResourceData, client *govmomi.Client) (*types.Vm
 		// workflow, so if there are any defined, return an error indicating such.
 		// Return with a no-op otherwise.
 		if len(newMap) > 0 {
-			return nil, fmt.Errorf("vApp properties can only be set on cloned virtual machines")
+			return nil, false, fmt.Errorf("vApp properties can only be set on cloned virtual machines")
 		}
-		return nil, nil
+		return nil, false, nil
 	}
 	vm, _ := virtualmachine.FromUUID(client, d.Id())
 	vmProps, _ := virtualmachine.Properties(vm)
 	if vmProps.Config.VAppConfig == nil {
-		return nil, fmt.Errorf("this VM lacks a vApp configuration and cannot have vApp properties set on it")
+		return nil, false, fmt.Errorf("this VM lacks a vApp configuration and cannot have vApp properties set on it")
 	}
 	allProperties := vmProps.Config.VAppConfig.GetVmConfigInfo().Property
 
@@ -786,19 +799,19 @@ func expandVAppConfig(d *schema.ResourceData, client *govmomi.Client) (*types.Vm
 			} else {
 				_, ok := newMap[p.Id]
 				if ok {
-					return nil, fmt.Errorf("vApp property with userConfigurable=false specified in vapp.properties: %+v", reflect.ValueOf(newMap).MapKeys())
+					return nil, false, fmt.Errorf("vApp property with userConfigurable=false specified in vapp.properties: %+v", reflect.ValueOf(newMap).MapKeys())
 				}
 			}
 		}
 	}
 
 	if len(newMap) > 0 {
-		return nil, fmt.Errorf("unsupported vApp properties in vapp.properties: %+v", reflect.ValueOf(newMap).MapKeys())
+		return nil, false, fmt.Errorf("unsupported vApp properties in vapp.properties: %+v", reflect.ValueOf(newMap).MapKeys())
 	}
 
 	return &types.VmConfigSpec{
 		Property: props,
-	}, nil
+	}, true, nil
 }
 
 // flattenVAppConfig reads in the vAppConfig from a running virtual machine
@@ -908,10 +921,12 @@ func expandVirtualMachineProfileSpec(d *schema.ResourceData) []types.BaseVirtual
 // returns a VirtualMachineConfigSpec.
 func expandVirtualMachineConfigSpec(d *schema.ResourceData, client *govmomi.Client) (types.VirtualMachineConfigSpec, error) {
 	log.Printf("[DEBUG] %s: Building config spec", resourceVSphereVirtualMachineIDString(d))
-	vappConfig, err := expandVAppConfig(d, client)
+	vappConfig, vappEnabled, err := expandVAppConfig(d, client)
 	if err != nil {
 		return types.VirtualMachineConfigSpec{}, err
 	}
+
+	vappConfigRemoved := !vappEnabled
 
 	obj := types.VirtualMachineConfigSpec{
 		Name:                         d.Get("name").(string),
@@ -933,6 +948,7 @@ func expandVirtualMachineConfigSpec(d *schema.ResourceData, client *govmomi.Clie
 		SwapPlacement:                getWithRestart(d, "swap_placement_policy").(string),
 		BootOptions:                  expandVirtualMachineBootOptions(d, client),
 		VAppConfig:                   vappConfig,
+		VAppConfigRemoved:            &vappConfigRemoved,
 		Firmware:                     getWithRestart(d, "firmware").(string),
 		NestedHVEnabled:              getBoolWithRestart(d, "nested_hv_enabled"),
 		VPMCEnabled:                  getBoolWithRestart(d, "cpu_performance_counters_enabled"),

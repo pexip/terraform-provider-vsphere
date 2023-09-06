@@ -1390,13 +1390,15 @@ func resourceVsphereMachineDeployOvfAndOva(d *schema.ResourceData, meta interfac
 	log.Printf("[DEBUG] VM %q - UUID is %q", vm.InventoryPath, vprops.Config.Uuid)
 	d.SetId(vprops.Config.Uuid)
 	// update vapp properties
-	vappConfig, err := expandVAppConfig(d, client)
+	vappConfig, vappEnabled, err := expandVAppConfig(d, client)
 	if err != nil {
 		return nil, fmt.Errorf("error while creating vapp properties config %s", err)
 	}
 	if vappConfig != nil {
+		vappConfigRemoved := !vappEnabled
 		vmConfigSpec := types.VirtualMachineConfigSpec{
-			VAppConfig: vappConfig,
+			VAppConfig:        vappConfig,
+			VAppConfigRemoved: &vappConfigRemoved,
 		}
 		err = virtualmachine.Reconfigure(vm, vmConfigSpec, timeout)
 		if err != nil {
