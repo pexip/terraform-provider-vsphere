@@ -68,7 +68,7 @@ func CreateLibrary(d *schema.ResourceData, restclient *rest.Client, backings []l
 	clm := library.NewManager(restclient)
 	ctx := context.TODO()
 	lib := library.Library{
-		Description: d.Get("description").(string),
+		Description: d.Get("description").(*string),
 		Name:        name,
 		Storage:     backings,
 		Type:        "LOCAL",
@@ -165,7 +165,7 @@ func CreateLibraryItem(c *rest.Client, l *library.Library, name string, desc str
 	clm := library.NewManager(c)
 	ctx := context.TODO()
 	item := library.Item{
-		Description: desc,
+		Description: &desc,
 		LibraryID:   l.ID,
 		Name:        name,
 		Type:        t,
